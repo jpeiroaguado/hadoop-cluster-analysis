@@ -1,0 +1,47 @@
+---
+startDelaySeconds: 0
+ssl: false
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+# Reglas para extraer métricas clave de Hadoop NameNode
+rules:
+  # Métricas JVM (memoria heap, GC, threads)
+  - pattern: "Hadoop<service=NameNode, name=JvmMetrics><>(\\w+)"
+    name: hadoop_namenode_jvm_$1
+    type: GAUGE
+
+  # Métricas del NameNode (capacidad HDFS, bloques, nodos)
+  - pattern: "Hadoop<service=NameNode, name=FSNamesystem><>(\\w+)"
+    name: hadoop_namenode_$1
+    type: GAUGE
+
+  # Métricas de actividad del NameNode
+  - pattern: "Hadoop<service=NameNode, name=NameNodeActivity><>(\\w+)"
+    name: hadoop_namenode_activity_$1
+    type: GAUGE
+
+  # Métricas RPC
+  - pattern: "Hadoop<service=NameNode, name=RpcActivityForPort\\d+><>(\\w+)"
+    name: hadoop_namenode_rpc_$1
+    type: GAUGE
+
+  # Métrica genérica para todo lo demás de Hadoop
+  - pattern: "Hadoop<service=(\\w+), name=(\\w+)><>(\\w+)"
+    name: hadoop_$1_$2_$3
+    type: GAUGE
+
+  # JVM genérico (aplica también a DataNodes)
+  - pattern: "java.lang<type=Memory><HeapMemoryUsage>(\\w+)"
+    name: jvm_heap_$1
+    type: GAUGE
+
+  - pattern: "java.lang<type=GarbageCollector, name=(.+)><CollectionCount>"
+    name: jvm_gc_collection_count
+    labels:
+      gc: "$1"
+    type: COUNTER
+
+  - pattern: "java.lang<type=Threading><>(ThreadCount|DaemonThreadCount)"
+    name: jvm_threads_$1
+    type: GAUGE

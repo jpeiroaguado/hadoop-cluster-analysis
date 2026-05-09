@@ -1,0 +1,203 @@
+services:
+  Nodo-principal2:
+    build: .
+    image: hadoop-con-sqoop
+    container_name: Nodo-principal2
+    hostname: Nodo-principal2
+    ports:
+      - "9870:9870"
+      - "8088:8088"
+      - "9000:9000"
+      - "8032:8032"
+      - "9094:9094"
+    environment:
+      - CLUSTER_NAME=test
+      - CORE_CONF_fs_defaultFS=hdfs://Nodo-principal2:9000
+      - CORE_CONF_hadoop_http_staticuser_user=root
+      - HDFS_CONF_dfs_webhdfs_enabled=true
+      - HDFS_CONF_dfs_permissions_enabled=false
+      - HDFS_CONF_dfs_namenode_datanode_registration_ip___hostname___check=false
+      - YARN_CONF_yarn_resourcemanager_hostname=Nodo-principal2
+      - YARN_CONF_yarn_log___aggregation___enable=true
+      - YARN_CONF_yarn_nodemanager_remote___app___log___dir=/app-logs
+    volumes:
+      - namenode:/hadoop/dfs/name
+    networks:
+      - red-docker2
+
+  mysql-practica2:
+    image: mysql:8.0
+    container_name: mysql-practica2
+    hostname: mysql-practica2
+    restart: unless-stopped
+    ports:
+      - "3307:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=root1234
+      - MYSQL_DATABASE=example
+      - MYSQL_USER=alumne
+      - MYSQL_PASSWORD=alumne1234
+      - MYSQL_ROOT_HOST=%
+    command:
+      --local-infile=1
+      --loose-local-infile=1
+      --secure-file-priv=""
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot1234"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./config/mysql.cnf:/etc/mysql/conf.d/local_infile.cnf
+      - ./datos_electricidad_bueno.csv:/var/lib/mysql-files/datos_electricidad_bueno.csv
+      - ./init-scripts/mysql-loader.sh:/docker-entrypoint-initdb.d/mysql-loader.sh
+    networks:
+      - red-docker2
+
+  generador-datos:
+    image: python:3.11-slim
+    container_name: generador-datos
+    depends_on:
+      mysql-practica2:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./scripts/generando_datos.py:/app/generando_datos.py
+      - generador_signal:/tmp
+    working_dir: /app
+    command: bash -c "pip install pymysql cryptography scikit-learn numpy -q && python generando_datos.py"
+    networks:
+      - red-docker2
+    restart: "no"
+
+  sqoop-init:
+    image: hadoop-con-sqoop
+    container_name: sqoop-init
+    depends_on:
+      Nodo-principal2:
+        condition: service_started
+      datos-12:
+        condition: service_started
+      datos-22:
+        condition: service_started
+      mysql-practica2:
+        condition: service_healthy
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://Nodo-principal2:9000
+      - YARN_CONF_yarn_resourcemanager_hostname=Nodo-principal2
+      - YARN_CONF_yarn_resourcemanager_address=Nodo-principal2:8032
+      - YARN_CONF_yarn_resourcemanager_scheduler_address=Nodo-principal2:8030
+      - YARN_CONF_yarn_resourcemanager_resource__tracker_address=Nodo-principal2:8031
+    volumes:
+      - ./init-scripts/sqoop-init.sh:/sqoop-init.sh
+      - generador_signal:/tmp
+    entrypoint: ["bash", "/sqoop-init.sh"]
+    networks:
+      - red-docker2
+    restart: "no"
+
+  hive-init:
+    image: apache/hive:4.0.0
+    container_name: hive-init
+    depends_on:
+      - hive2
+      - sqoop-init
+    volumes:
+      - ./init-scripts/hive-init.sh:/hive-init.sh
+    entrypoint: ["bash", "/hive-init.sh"]
+    networks:
+      - red-docker2
+    restart: "no"
+
+  hive2:
+    image: apache/hive:4.0.0
+    container_name: hive2
+    hostname: hive2
+    ports:
+      - "10000:10000"
+      - "10002:10002"
+    environment:
+      - SERVICE_NAME=hiveserver2
+    volumes:
+      - hive_metastore:/opt/hive/data/derby
+    networks:
+      - red-docker2
+
+  datos-12:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datos-12
+    hostname: datos-12
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://Nodo-principal2:9000
+      - HDFS_DATANODE_OPTS=-javaagent:/opt/jmx_exporter/jmx_prometheus_javaagent.jar=9091:/opt/jmx_exporter/jmx-exporter.yml
+    volumes:
+      - datos12_hdfs:/hadoop/dfs/data
+      - ./config/jmx_prometheus_javaagent.jar:/opt/jmx_exporter/jmx_prometheus_javaagent.jar
+      - ./config/jmx-exporter.yml:/opt/jmx_exporter/jmx-exporter.yml
+    depends_on:
+      - Nodo-principal2
+    networks:
+      - red-docker2
+
+  datos-22:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datos-22
+    hostname: datos-22
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://Nodo-principal2:9000
+      - HDFS_DATANODE_OPTS=-javaagent:/opt/jmx_exporter/jmx_prometheus_javaagent.jar=9091:/opt/jmx_exporter/jmx-exporter.yml
+    volumes:
+      - datos22_hdfs:/hadoop/dfs/data
+      - ./config/jmx_prometheus_javaagent.jar:/opt/jmx_exporter/jmx_prometheus_javaagent.jar
+      - ./config/jmx-exporter.yml:/opt/jmx_exporter/jmx-exporter.yml
+    depends_on:
+      - Nodo-principal2
+    networks:
+      - red-docker2
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus-equipo2
+    hostname: prometheus-equipo2
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - red-docker2
+    depends_on:
+      - Nodo-principal2
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana-equipo2
+    hostname: grafana-equipo2
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - red-docker2
+    depends_on:
+      - prometheus
+
+networks:
+  red-docker2:
+    name: red-docker2
+    driver: bridge
+
+volumes:
+  namenode:
+  mysql_data:
+  prometheus_data:
+  grafana_data:
+  datos12_hdfs:
+  datos22_hdfs:
+  hive_metastore:
+  generador_signal:
