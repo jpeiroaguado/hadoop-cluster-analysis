@@ -4,6 +4,7 @@ services:
     image: hadoop-con-sqoop
     container_name: Nodo-principal2
     hostname: Nodo-principal2
+    restart: unless-stopped
     ports:
       - "9870:9870"
       - "8088:8088"
@@ -99,14 +100,31 @@ services:
       - red-docker2
     restart: "no"
 
+  metricas-init:
+    image: python:3.11-slim
+    container_name: metricas-init
+    depends_on:
+      - prometheus
+    volumes:
+      - ./scripts/export_prometheus.py:/app/export_prometheus.py
+      - ./outputs:/outputs
+    working_dir: /app
+    command: bash -c "python export_prometheus.py"
+    networks:
+      - red-docker2
+    restart: "no"
+
   hive-init:
     image: apache/hive:4.0.0
     container_name: hive-init
     depends_on:
       - hive2
       - sqoop-init
+      - metricas-init
+      - prediccion-javier
     volumes:
       - ./init-scripts/hive-init.sh:/hive-init.sh
+      - ./outputs:/data
     entrypoint: ["bash", "/hive-init.sh"]
     networks:
       - red-docker2
@@ -116,6 +134,7 @@ services:
     image: apache/hive:4.0.0
     container_name: hive2
     hostname: hive2
+    restart: unless-stopped
     ports:
       - "10000:10000"
       - "10002:10002"
@@ -123,6 +142,7 @@ services:
       - SERVICE_NAME=hiveserver2
     volumes:
       - hive_metastore:/opt/hive/data/derby
+      - hive_warehouse:/opt/hive/data/warehouse
     networks:
       - red-docker2
 
@@ -130,6 +150,7 @@ services:
     image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
     container_name: datos-12
     hostname: datos-12
+    restart: unless-stopped
     environment:
       - CORE_CONF_fs_defaultFS=hdfs://Nodo-principal2:9000
       - HDFS_DATANODE_OPTS=-javaagent:/opt/jmx_exporter/jmx_prometheus_javaagent.jar=9091:/opt/jmx_exporter/jmx-exporter.yml
@@ -146,6 +167,7 @@ services:
     image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
     container_name: datos-22
     hostname: datos-22
+    restart: unless-stopped
     environment:
       - CORE_CONF_fs_defaultFS=hdfs://Nodo-principal2:9000
       - HDFS_DATANODE_OPTS=-javaagent:/opt/jmx_exporter/jmx_prometheus_javaagent.jar=9091:/opt/jmx_exporter/jmx-exporter.yml
@@ -162,6 +184,7 @@ services:
     image: prom/prometheus:latest
     container_name: prometheus-equipo2
     hostname: prometheus-equipo2
+    restart: unless-stopped
     ports:
       - "9090:9090"
     volumes:
@@ -176,6 +199,7 @@ services:
     image: grafana/grafana:latest
     container_name: grafana-equipo2
     hostname: grafana-equipo2
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
@@ -186,6 +210,46 @@ services:
       - red-docker2
     depends_on:
       - prometheus
+
+  exportador:
+    image: python:3.11-slim
+    container_name: exportador
+    depends_on:
+      - prometheus
+    environment:
+      - PROMETHEUS_URL=http://prometheus-equipo2:9090
+      - OUTPUT_CSV=/outputs/metricas_cluster.csv
+    volumes:
+      - ./scripts/export_prometheus.py:/scripts/export_prometheus.py
+      - ./outputs:/outputs
+    command: >
+      bash -c "while true; do
+        python3 /scripts/export_prometheus.py;
+        sleep 60;
+      done"
+    networks:
+      - red-docker2
+    restart: unless-stopped
+
+  prediccion-javier:
+    image: rocker/tidyverse:latest
+    container_name: prediccion-javier
+    depends_on:
+      - exportador
+    environment:
+      - INPUT_CSV=/outputs/metricas_cluster.csv
+      - OUTPUT_CSV=/outputs/predicciones_javier.csv
+      - OUTPUT_PNG=/outputs/prediccion_cpu_nodo.png
+    volumes:
+      - ./scripts/prediccion_javier.R:/scripts/prediccion_javier.R
+      - ./outputs:/outputs
+    command: >
+      bash -c "echo '[WAIT] Esperando datos...' &&
+               sleep 90 &&
+               Rscript /scripts/prediccion_javier.R"
+    networks:
+      - red-docker2
+    restart: "no"
 
 networks:
   red-docker2:
@@ -201,3 +265,4 @@ volumes:
   datos22_hdfs:
   hive_metastore:
   generador_signal:
+  hive_warehouse:
